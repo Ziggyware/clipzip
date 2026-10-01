@@ -1,0 +1,15 @@
+[package]
+name = "clipzip"
+version = "0.1.0"
+edition = "2021"
+description = "Clipboard zip/unzip for Windows. clipzip defaults to zip; clipunzip defaults to unzip."
+
+[dependencies]
+winapi = { version = "0.3", features = ["winuser", "winbase", "shellapi", "minwindef", "windef"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3

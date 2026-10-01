@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clipzip / clipunzip</title>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@420;520;650&display=swap" rel="stylesheet">
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: Outfit, sans-serif; background: #10120e; }
+  code, pre, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  .gridbg {
+    background-image:
+      linear-gradient(rgba(214,255,74,.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(214,255,74,.05) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+</style>
+</head>
+<body class="text-stone-200 min-h-screen">
+<div class="gridbg min-h-screen">
+<main class="max-w-5xl mx-auto px-5 py-12 md:py-16">
+  <header class="flex flex-wrap items-end justify-between gap-6 border-b border-stone-800 pb-8">
+    <div>
+      <p class="mono text-xs tracking-[0.22em] text-lime-300/80 uppercase">Windows clipboard utility</p>
+      <h1 class="mt-2 text-4xl md:text-5xl font-semibold tracking-tight text-stone-50">clipzip <span class="text-stone-600">/</span> clipunzip</h1>
+      <p class="mt-3 max-w-xl text-stone-400">Turn a fenced file bundle on the clipboard into a zip, and write that zip back out as files. Same idea as clipin and clipout, pointed at archives.</p>
+    </div>
+    <div class="mono text-xs text-stone-500 text-right">
+      <div>clipzip.exe &nbsp;→ zip</div>
+      <div>clipunzip.exe → unzip</div>
+    </div>
+  </header>
+
+  <section class="mt-8 grid md:grid-cols-2 gap-4">
+    <article class="rounded-2xl border border-lime-300/30 bg-lime-300/5 p-5">
+      <div class="flex items-center justify-between">
+        <h2 class="mono text-lime-300 text-lg">clipzip</h2>
+        <span class="mono text-[11px] uppercase tracking-wider text-lime-200/70 border border-lime-300/30 rounded-full px-2 py-0.5">default --zip</span>
+      </div>
+      <p class="mt-3 text-sm text-stone-300">Reads path + fenced content from the clipboard and replaces it with a zip. Relative paths stay inside the archive.</p>
+      <pre class="mono mt-4 text-sm text-lime-100/90 bg-black/40 rounded-xl p-3 overflow-x-auto">c:\test&gt; clipzip
+c:\test&gt; clipzip bundle.zip</pre>
+    </article>
+    <article class="rounded-2xl border border-teal-300/30 bg-teal-300/5 p-5">
+      <div class="flex items-center justify-between">
+        <h2 class="mono text-teal-300 text-lg">clipunzip</h2>
+        <span class="mono text-[11px] uppercase tracking-wider text-teal-200/70 border border-teal-300/30 rounded-full px-2 py-0.5">default --unzip</span>
+      </div>
+      <p class="mt-3 text-sm text-stone-300">No arguments previews paths, byte sizes, packed sizes, totals, and unsafe entries. Pass a destination or --unzip to extract.</p>
+      <pre class="mono mt-4 text-sm text-teal-100/90 bg-black/40 rounded-xl p-3 overflow-x-auto">c:\test&gt; clipunzip            # preview
+c:\test&gt; clipunzip --unzip    # extract here
+c:\test&gt; clipunzip .\out     # extract there</pre>
+      <p class="mono mt-4 text-xs text-stone-500">Preview layout (illustrative):</p>
+      <pre class="mono mt-2 text-xs leading-5 text-teal-100/80 overflow-x-auto">BYTES        PACKED  PATH
+          12            14  file_path/file_name.ext
+          13            15  file_path/file_name2.ext
+
+2 file(s), 0 folder(s), 0 unsafe/unreadable</pre>
+    </article>
+  </section>
+
+  <section class="mt-10 grid lg:grid-cols-2 gap-8">
+    <div>
+      <h2 class="text-xl text-stone-100">Round trip</h2>
+      <p class="mt-2 text-sm text-stone-400">Clipboard before <span class="text-lime-300">clipzip</span>. After it, <span class="text-teal-300">clipunzip</span> previews the zip; use --unzip to write files.</p>
+      <pre id="sample" class="mono mt-4 text-[13px] leading-6 bg-stone-950 border border-stone-800 rounded-2xl p-4 text-stone-300 overflow-x-auto"></pre>
+      <p class="mono mt-3 text-xs text-stone-500">writes c:\test\file_path\file_name.ext and file_name2.ext</p>
+    </div>
+    <div>
+      <h2 class="text-xl text-stone-100">Preview a bundle</h2>
+      <p class="mt-2 text-sm text-stone-400">Paste clipboard text. This is the same path and fence check the zip step uses. Nothing leaves the browser.</p>
+      <textarea id="input" rows="8" class="mono mt-4 w-full bg-stone-950 border border-stone-800 rounded-2xl p-4 text-sm text-stone-200 focus:outline-none focus:border-lime-300/60" spellcheck="false"></textarea>
+      <ul id="out" class="mono mt-3 text-sm space-y-1"></ul>
+    </div>
+  </section>
+
+  <section class="mt-10 overflow-x-auto">
+    <h2 class="text-xl text-stone-100 mb-3">Flags</h2>
+    <table class="w-full text-sm border-collapse">
+      <thead class="text-left text-stone-500 mono text-xs uppercase tracking-wider">
+        <tr class="border-b border-stone-800">
+          <th class="py-2 pr-4 font-medium">Flag</th>
+          <th class="py-2 font-medium">Effect</th>
+        </tr>
+      </thead>
+      <tbody class="text-stone-300">
+        <tr class="border-b border-stone-900"><td class="py-2 pr-4 mono text-lime-300">--zip</td><td>Force zip, even if the exe is clipunzip</td></tr>
+        <tr class="border-b border-stone-900"><td class="py-2 pr-4 mono text-teal-300">--unzip</td><td>Extract into current folder unless a destination is provided</td></tr>
+        <tr class="border-b border-stone-900"><td class="py-2 pr-4 mono">--list</td><td>Show metadata without writing files</td></tr>
+        <tr class="border-b border-stone-900"><td class="py-2 pr-4 mono">--b64</td><td>Zip mode: clipboard gets Base64 text</td></tr>
+        <tr class="border-b border-stone-900"><td class="py-2 pr-4 mono">--trace</td><td>Diagnostics on stderr</td></tr>
+        <tr><td class="py-2 pr-4 mono">--help</td><td>Help. No clipboard change.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="mt-10 rounded-2xl border border-stone-800 bg-stone-950/80 p-5">
+    <h2 class="text-xl text-stone-100">Build</h2>
+    <pre class="mono mt-3 text-sm text-stone-300 overflow-x-auto">cargo build --release
+copy target\release\clipzip.exe   C:\Windows\System32\
+copy target\release\clipunzip.exe C:\Windows\System32\</pre>
+    <ul class="mt-4 text-sm text-stone-400 space-y-1 list-disc pl-5">
+      <li>Zip mode also drops a .zip on the clipboard, so it pastes into Explorer.</li>
+      <li>Unzip accepts the binary format, a copied .zip, or Base64 text.</li>
+      <li>Paths with .. or a drive letter are refused.</li>
+    </ul>
+  </section>
+</main>
+</div>
+<script>
+const tick = String.fromCharCode(96);
+const fence = tick.repeat(3);
+const sample = [
+  "file_path\\file_name.ext",
+  fence + "ext",
+  "file content",
+  fence,
+  "",
+  "file_path\\file_name2.ext",
+  fence + "ext",
+  "file content2",
+  fence
+].join("\n");
+document.getElementById("sample").textContent = sample;
+const input = document.getElementById("input");
+const out = document.getElementById("out");
+input.value = sample;
+
+function clean(raw) {
+  let s = raw.trim().replace(/^#+/, "").trim().replace(/^[*`[\]"']+|[*`[\]"']+$/g, "").trim().replace(/:$/, "").trim();
+  const cut = Math.min(...[" ", "(", "//"].map(k => { const i = s.indexOf(k); return i < 0 ? s.length : i; }));
+  s = s.slice(0, cut).trim().replace(/:$/, "");
+  return /[./\\]/.test(s) ? s : null;
+}
+function safe(n) {
+  n = n.replace(/\\/g, "/");
+  if (n.includes(":") || n.startsWith("//")) return null;
+  const p = n.split("/").filter(x => x && x !== ".");
+  if (!p.length || p.includes("..")) return null;
+  return p.join("/");
+}
+function parse(text) {
+  const lines = text.split("\n").map(l => l.replace(/\r$/, ""));
+  const res = [];
+  let i = 0;
+  while (i < lines.length) {
+    const t = lines[i].trim();
+    const open = (t.match(/^`*/) || [""])[0].length;
+    if (open < 3) { i++; continue; }
+    let name = null;
+    for (let k = i - 1; k >= 0; k--) {
+      if (!lines[k].trim()) continue;
+      name = clean(lines[k]);
+      break;
+    }
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const tj = lines[j].trim();
+      if (/^`+$/.test(tj) && tj.length >= open) { end = j; break; }
+    }
+    const body = lines.slice(i + 1, end).join("\n");
+    res.push({ name: name && safe(name), bytes: new Blob([body]).size });
+    i = end + 1;
+  }
+  return res;
+}
+function render() {
+  const items = parse(input.value);
+  out.replaceChildren();
+  if (!input.value.trim()) return;
+  if (!items.length) {
+    const li = document.createElement("li");
+    li.className = "text-amber-300";
+    li.textContent = "No fenced file blocks.";
+    out.appendChild(li);
+    return;
+  }
+  for (const it of items) {
+    const li = document.createElement("li");
+    li.className = it.name ? "text-lime-300" : "text-red-400";
+    li.textContent = it.name ? "+ " + it.name + "  (" + it.bytes + " B)" : "! skipped (no usable filename)";
+    out.appendChild(li);
+  }
+}
+input.addEventListener("input", render);
+render();
+</script>
+</body>
+</html>
