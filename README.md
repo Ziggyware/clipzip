@@ -9,6 +9,7 @@ clipzip   [name.zip]     fenced bundle on the clipboard -> zip on the clipboard
 clipunzip                zip on the clipboard           -> read-only preview
 clipunzip --unzip        zip on the clipboard           -> files in cwd
 clipunzip [dest_dir]     zip on the clipboard           -> files under dest_dir
+clipunzip --mem          zip on the clipboard           -> formatted text on the clipboard
 ```
 
 ## Build
@@ -40,6 +41,7 @@ Copying `clipzip.exe` to `clipunzip.exe` also works. The default follows the exe
 | `--zip` `--z` | Force zip mode |
 | `--unzip` `--u` | Force unzip mode |
 | `--list` `--l` | Preview archive metadata, write nothing |
+| `--mem` `--m` | Unzip in memory: zip on the clipboard -> `path` / fenced content text on the clipboard. Writes no files |
 | `--b64` | With zip: clipboard receives Base64 text instead of a binary zip |
 | `--trace` `--t` | Diagnostics |
 | `--help` `--h` | Help |
@@ -73,6 +75,14 @@ c:\test\file_path\file_name.ext
 c:\test\file_path\file_name2.ext
 ```
 
+### Clipboard text without the bundle shape
+
+If the clipboard text has no usable `path` line + fence blocks, `clipzip` does not fail. It stores the whole text as one file under a dummy name, `clipboard_<unix-seconds>.txt`, with a warning on stderr.
+
+### In-memory unzip (`--mem`)
+
+`clipunzip --mem` reads the clipboard zip and writes the same bundle shape back to the clipboard as text. Each file becomes a path line (`folder\file.ext`, or `.\name` for a root file), a fence tagged with the extension, and the content. Binary files use a `base64` fence. The fence is longer than any backtick-only line in the content. Nothing is written to disk, and a dest_dir cannot be combined with `--mem`.
+
 The preview shows the clipboard source, archive byte size, each path's original and compressed byte sizes, unsafe-entry warnings, folder count, totals and compression reduction. It does not create directories or extract data. `clipzip bundle.zip` also saves that zip on disk. `clipunzip .\out` extracts under `.\out`.
 
 ## Clipboard formats
@@ -92,3 +102,5 @@ Unzip reads, in order: that binary format, a copied `.zip` file, then Base64 tex
 - Text is stored with CRLF between lines, matching `clipout`.
 - `..`, drive letters, and other absolute paths are refused on the way in and on the way out.
 - Duplicate paths: the last block wins.
+- Plain text with no path/fence blocks is zipped as `clipboard_<unix-seconds>.txt`.
+- `--mem` output is limited by the bundle format: a path containing whitespace or `(` is cut at that character when read back.

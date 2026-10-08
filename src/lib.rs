@@ -422,6 +422,83 @@ fn build_zip(recs: &[Rec]) -> Result<(Vec<u8>, usize), String> {
     Ok((bytes, uniq.len()))
 }
 
+/// Name for clipboard text that has no usable `path` + fence blocks.
+/// Unix seconds keep it distinct per run without a date library.
+fn dummy_name() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("clipboard_{}.txt", secs)
+}
+
+/// Wrap plain clipboard text as one record under a dummy name.
+/// Lines are stored with CRLF, matching the bundle convention.
+fn plain_text_rec(text: &str) -> Rec {
+    let body = text.replace("\r\n", "\n").replace('\n', "\r\n");
+    Rec {
+        name: dummy_name(),
+        data: body.into_bytes(),
+    }
+}
+
+/// Fence longer than any line in `body` that is only backticks, so the
+/// content can never close the fence early. Minimum three backticks.
+fn fence_for(body: &str) -> String {
+    let longest = body
+        .lines()
+        .map(|l| {
+            let t = l.trim();
+            if !t.is_empty() && t.chars().all(|c| c == '`') {
+                t.len()
+            } else {
+                0
+            }
+        })
+        .max()
+        .unwrap_or(0);
+    "`".repeat((longest + 1).max(3))
+}
+
+/// Inverse of parse_bundle: `path` line, fence, content, fence, blank line.
+/// Text files keep their extension as the fence tag; binary files use a
+/// base64 fence so they round-trip through the parser.
+fn format_bundle(files: &[(String, Vec<u8>)]) -> String {
+    let mut out = String::new();
+    for (i, (name, data)) in files.iter().enumerate() {
+        if i > 0 {
+            out.push_str("\r\n");
+        }
+        let mut path = name.replace('/', "\\");
+        if !path.contains('\\') {
+            // Bare names have no separator and would be skipped on the way back in.
+            path = format!(".\\{}", path);
+        }
+        let (tag, body) = match std::str::from_utf8(data) {
+            Ok(text) => {
+                let ext = Path::new(name)
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let tag = if ext == "base64" { String::new() } else { ext };
+                (tag, text.replace("\r\n", "\n").replace('\n', "\r\n"))
+            }
+            Err(_) => ("base64".to_string(), b64_encode(data)),
+        };
+        let fence = fence_for(&body);
+        out.push_str(&path);
+        out.push_str("\r\n");
+        out.push_str(&fence);
+        out.push_str(&tag);
+        out.push_str("\r\n");
+        out.push_str(&body);
+        out.push_str("\r\n");
+        out.push_str(&fence);
+        out.push_str("\r\n");
+    }
+    out
+}
+
 fn human(n: usize) -> String {
     if n >= 1024 * 1024 {
         format!("{:.1} MB", n as f64 / 1048576.0)
@@ -439,6 +516,7 @@ struct Cfg {
     zip: bool,
     unzip: bool,
     list: bool,
+    mem: bool,
     b64: bool,
     trace: bool,
     help: bool,
@@ -450,6 +528,7 @@ fn parse_args() -> Cfg {
         zip: false,
         unzip: false,
         list: false,
+        mem: false,
         b64: false,
         trace: false,
         help: false,
@@ -460,6 +539,7 @@ fn parse_args() -> Cfg {
             "--z" | "--zip" | "-z" | "/zip" | "/z" => c.zip = true,
             "--u" | "--unzip" | "-u" | "-x" | "/unzip" | "/u" => c.unzip = true,
             "--l" | "--list" | "-l" | "/list" | "/l" => c.list = true,
+            "--m" | "--mem" | "--memory" | "-m" | "/mem" | "/m" => c.mem = true,
             "--b64" | "--b" | "-b" | "/b64" => c.b64 = true,
             "--t" | "--trace" | "-t" | "/trace" | "/t" => c.trace = true,
             "--h" | "--help" | "-h" | "/?" | "/help" | "/h" | "?" => c.help = true,
@@ -490,7 +570,7 @@ fn invoked_as_unzip() -> bool {
 }
 
 fn should_preview(cfg: &Cfg, as_unzip: bool) -> bool {
-    cfg.list || (as_unzip && !cfg.unzip && cfg.positional.is_none())
+    cfg.list || (as_unzip && !cfg.unzip && !cfg.mem && cfg.positional.is_none())
 }
 
 fn help_text(as_unzip: bool) -> String {
@@ -510,6 +590,9 @@ fn help_text(as_unzip: bool) -> String {
                      Optional name.zip is also written to disk.
     \x1b[0;33m--unzip --u\x1b[0m     Extract clipboard zip under dest_dir (default: cwd).
     \x1b[0;33m--list  --l\x1b[0m     Preview archive contents without writing files.
+    \x1b[0;33m--mem   --m\x1b[0m     Unzip in memory: clipboard zip -> formatted text on clipboard
+                     (path line, fence, content). Writes no files.
+                     The clipboard is the target instead of a folder.
     \x1b[0;33m--b64\x1b[0m           Zip mode: put the archive on the clipboard as Base64 text.
     \x1b[0;33m--trace --t\x1b[0m     Diagnostics
     \x1b[0;33m--help  --h\x1b[0m     This message
@@ -525,6 +608,7 @@ fn help_text(as_unzip: bool) -> String {
     clipunzip --unzip           (extract into cwd)
     clipunzip .\\out
     clipunzip --list
+    clipunzip --mem             (zip -> formatted text on clipboard)
 ",
         fmt = ZIP_FORMAT_NAME,
     )
@@ -544,9 +628,15 @@ fn do_zip(cfg: &Cfg) {
     if text.trim().is_empty() {
         die("Clipboard has no text to zip.");
     }
-    let recs = parse_bundle(&text);
+    let mut recs = parse_bundle(&text);
     if recs.is_empty() {
-        die("No fenced file blocks found. Expected a path line, then a backtick fence, then content.");
+        // Not a path + fence bundle: keep the text as one file under a dummy name.
+        let rec = plain_text_rec(&text);
+        eprintln!(
+            "Warning: clipboard text is not in path + fence format; stored as {}.",
+            rec.name
+        );
+        recs.push(rec);
     }
     if cfg.trace {
         for r in &recs {
@@ -660,6 +750,56 @@ fn read_clipboard_zip(trace: bool) -> Option<(Vec<u8>, String)> {
     None
 }
 
+/// --mem: unzip in memory. Each file becomes a `path` line plus fenced content
+/// (the format parse_bundle reads), and the text goes on the clipboard.
+fn unzip_to_memory(ar: &mut zip::ZipArchive<Cursor<Vec<u8>>>) {
+    let mut files: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut skipped = 0usize;
+    for i in 0..ar.len() {
+        let mut f = match ar.by_index(i) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("Skipping entry {}: {}", i, e);
+                skipped += 1;
+                continue;
+            }
+        };
+        let rel = match (safe_name(f.name()), f.enclosed_name()) {
+            (Some(n), Some(_)) => n,
+            _ => {
+                eprintln!("\x1b[0;33mSkipping unsafe path\x1b[0m: {}", f.name());
+                skipped += 1;
+                continue;
+            }
+        };
+        if f.is_dir() {
+            continue;
+        }
+        let mut data = Vec::new();
+        if let Err(e) = f.read_to_end(&mut data) {
+            eprintln!("Failed to read {}: {}", rel, e);
+            skipped += 1;
+            continue;
+        }
+        files.push((rel, data));
+    }
+
+    if files.is_empty() {
+        die("No files in the clipboard zip to place in memory.");
+    }
+    let text = format_bundle(&files);
+    if let Err(e) = clipboard::set_multi(&[(clipboard::CF_UNICODETEXT, clipboard::text_bytes(&text))]) {
+        die(&e);
+    }
+    println!(
+        "\x1b[2;36m{} file(s) unzipped to memory -> formatted text on clipboard.\x1b[0m",
+        files.len()
+    );
+    if skipped > 0 {
+        eprintln!("{} entr{} skipped.", skipped, if skipped == 1 { "y" } else { "ies" });
+    }
+}
+
 /// Inspect metadata only. Never create directories or decompress file data.
 fn preview_archive<W: Write>(
     ar: &mut zip::ZipArchive<Cursor<Vec<u8>>>,
@@ -717,6 +857,13 @@ fn do_unzip(cfg: &Cfg, preview: bool) {
     if preview {
         preview_archive(&mut ar, archive_size, &source, &mut io::stdout())
             .unwrap_or_else(|e| die(&format!("could not display archive: {}", e)));
+        return;
+    }
+    if cfg.mem {
+        if cfg.positional.is_some() {
+            die("--mem puts the result on the clipboard; do not give a dest_dir.");
+        }
+        unzip_to_memory(&mut ar);
         return;
     }
 
@@ -798,11 +945,14 @@ pub fn run() {
     if cfg.zip && cfg.unzip {
         die("Choose either --zip or --unzip, not both.");
     }
-    // Explicit flags win. --list implies unzip. --b64 implies zip.
+    if cfg.zip && cfg.mem {
+        die("Choose either --zip or --mem, not both.");
+    }
+    // Explicit flags win. --list and --mem imply unzip. --b64 implies zip.
     // Otherwise the exe name decides: clipunzip -> unzip, clipzip -> zip.
-    let unzip = if cfg.zip || (cfg.b64 && !cfg.unzip && !cfg.list) {
+    let unzip = if cfg.zip || (cfg.b64 && !cfg.unzip && !cfg.list && !cfg.mem) {
         false
-    } else if cfg.unzip || cfg.list {
+    } else if cfg.unzip || cfg.list || cfg.mem {
         true
     } else {
         as_unzip
@@ -834,7 +984,7 @@ mod tests {
 
     fn empty_cfg() -> Cfg {
         Cfg {
-            zip: false, unzip: false, list: false, b64: false,
+            zip: false, unzip: false, list: false, mem: false, b64: false,
             trace: false, help: false, positional: None,
         }
     }
@@ -919,6 +1069,44 @@ mod tests {
         file.read_to_string(&mut got).unwrap();
         assert_eq!(got, "file content");
         assert_eq!(file.enclosed_name().unwrap().to_string_lossy(), "file_path/file_name.ext");
+    }
+
+    #[test]
+    fn mem_implies_unzip_and_never_previews() {
+        let mut cfg = empty_cfg();
+        cfg.mem = true;
+        assert!(!should_preview(&cfg, true));
+        assert!(!should_preview(&cfg, false));
+    }
+
+    #[test]
+    fn plain_text_falls_back_to_dummy_name() {
+        let rec = plain_text_rec("hello\nworld");
+        assert!(rec.name.starts_with("clipboard_"));
+        assert!(rec.name.ends_with(".txt"));
+        assert_eq!(rec.data, b"hello\r\nworld");
+        assert!(parse_bundle("just some text\nno fence here").is_empty());
+    }
+
+    #[test]
+    fn format_bundle_roundtrips_through_parser() {
+        let files = vec![
+            ("file_path/file_name.ext".to_string(), b"file content".to_vec()),
+            ("notes.md".to_string(), b"a\r\nb\r\n".to_vec()),
+            ("pic.bin".to_string(), vec![0u8, 255, 1]),
+            ("fenced.md".to_string(), b"x\r\n```\r\ny".to_vec()),
+        ];
+        let text = format_bundle(&files);
+        let recs = parse_bundle(&text);
+        assert_eq!(recs.len(), 4);
+        assert_eq!(recs[0].name, "file_path/file_name.ext");
+        assert_eq!(recs[0].data, b"file content");
+        assert_eq!(recs[1].name, "notes.md");
+        assert_eq!(recs[1].data, b"a\r\nb\r\n");
+        assert_eq!(recs[2].name, "pic.bin");
+        assert_eq!(recs[2].data, vec![0u8, 255, 1]);
+        assert_eq!(recs[3].name, "fenced.md");
+        assert_eq!(recs[3].data, b"x\r\n```\r\ny");
     }
 
     #[test]
